@@ -51,14 +51,24 @@ def create_thumbnail(title, emoji, bg_colors, output_path):
             outline=(255, 255, 255, 80), width=3
         )
 
-    # === Main Title Text ===
-    try:
-        title_font = ImageFont.truetype(font_path, 120) if font_path else ImageFont.load_default()
-    except Exception:
-        title_font = ImageFont.load_default()
-
-    # Clean title for display (remove emoji from title text)
+    # === Main Title Text (auto-scale to fit) ===
     display_title = title.upper()
+    max_text_width = int(width * 0.88)  # 88% of thumbnail width
+
+    # Auto-scale font size to fit
+    font_size = 120
+    title_font = None
+    while font_size > 40:
+        try:
+            title_font = ImageFont.truetype(font_path, font_size) if font_path else ImageFont.load_default()
+        except Exception:
+            title_font = ImageFont.load_default()
+            break
+        bbox = draw.textbbox((0, 0), display_title, font=title_font)
+        tw = bbox[2] - bbox[0]
+        if tw <= max_text_width:
+            break
+        font_size -= 5
 
     # Calculate position
     bbox = draw.textbbox((0, 0), display_title, font=title_font)
