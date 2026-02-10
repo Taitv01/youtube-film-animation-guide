@@ -1,21 +1,102 @@
 """
 Video Assembler - Combines scene images + audio into a complete video.
-Uses MoviePy and FFmpeg. Optimized for fast encoding.
+Uses MoviePy and FFmpeg. Includes zoom effect and lyric text overlay.
 """
 import os
 import glob
+import numpy as np
 from moviepy import (
-    ImageClip, AudioFileClip,
+    ImageClip, AudioFileClip, TextClip, CompositeVideoClip,
     concatenate_videoclips, vfx
 )
 from config import VIDEO_WIDTH, VIDEO_HEIGHT, VIDEO_FPS, SCENE_DURATION, TRANSITION_DURATION
 
 
+def create_zoom_clip(image_path, duration, zoom_direction="in",
+                     width=None, height=None):
+    """
+    Create a clip with efficient Ken Burns zoom effect.
+    Pre-loads image at higher resolution and crops per frame.
+    """
+    width = width or VIDEO_WIDTH
+    height = height or VIDEO_HEIGHT
+
+    # Load image and resize to slightly larger than output
+    from PIL import Image as PILImage
+    pil_img = PILImage.open(image_path).convert("RGB")
+    # Scale to 115% of output size for zoom headroom
+    scale_w = int(width * 1.15)
+    scale_h = int(height * 1.15)
+    pil_img = pil_img.resize((scale_w, scale_h), PILImage.LANCZOS)
+    img_array = np.array(pil_img)
+
+    if zoom_direction == "in":
+        start_crop, end_crop = 0.0, 0.13  # zoom in = crop more over time
+    else:
+        start_crop, end_crop = 0.13, 0.0  # zoom out = crop less over time
+
+    def make_frame(t):
+        progress = t / max(duration, 0.001)
+        crop_pct = start_crop + (end_crop - start_crop) * progress
+
+        crop_x = int(scale_w * crop_pct / 2)
+        crop_y = int(scale_h * crop_pct / 2)
+
+        # Ensure we don't crop too much
+        crop_x = min(crop_x, (scale_w - width) // 2)
+        crop_y = min(crop_y, (scale_h - height) // 2)
+        crop_x = max(crop_x, 0)
+        crop_y = max(crop_y, 0)
+
+        cropped = img_array[crop_y:crop_y+height, crop_x:crop_x+width]
+
+        # If crop resulted in wrong size, fallback to center crop
+        if cropped.shape[0] != height or cropped.shape[1] != width:
+            cy = (scale_h - height) // 2
+            cx = (scale_w - width) // 2
+            cropped = img_array[cy:cy+height, cx:cx+width]
+
+        return cropped
+
+    from moviepy import VideoClip
+    clip = VideoClip(make_frame, duration=duration)
+    return clip
+
+
+def create_lyric_overlay(lyric_text, duration, width=None, height=None):
+    """Create a text overlay showing lyrics at the bottom of the screen."""
+    width = width or VIDEO_WIDTH
+    height = height or VIDEO_HEIGHT
+
+    if not lyric_text or lyric_text.strip() == "":
+        return None
+
+    try:
+        txt_clip = TextClip(
+            text=lyric_text,
+            font_size=36,
+            color="white",
+            stroke_color="black",
+            stroke_width=2,
+            size=(int(width * 0.8), None),
+            method="caption",
+            text_align="center",
+        )
+        txt_clip = (txt_clip
+                    .with_duration(duration)
+                    .with_position(("center", height - 120)))
+        return txt_clip
+    except Exception as e:
+        print(f"  ⚠️ Could not create lyric overlay: {e}")
+        return None
+
+
 def assemble_video(scene_paths, audio_path, output_path,
-                   scene_duration=None, width=None, height=None, fps=None):
+                   scene_duration=None, width=None, height=None, fps=None,
+                   lyrics=None):
     """
     Assemble scene images + audio into a final video.
-    Optimized: uses static images (no per-frame Ken Burns) for fast encoding.
+    Includes zoom effects, crossfade transitions, and optional lyric overlay.
     """
     width = width or VIDEO_WIDTH
     height = height or VIDEO_HEIGHT
@@ -26,7 +107,7 @@ def assemble_video(scene_paths, audio_path, output_path,
     print(f"  📸 Scenes: {len(scene_paths)}")
     print(f"  🎵 Audio: {audio_path or 'None (silent)'}")
 
-    # Load audio to determine total duration
+    # Load audio
     audio = None
     total_duration = len(scene_paths) * scene_duration
 
@@ -37,23 +118,43 @@ def assemble_video(scene_paths, audio_path, output_path,
         print(f"  ⏱️ Audio duration: {total_duration:.1f}s")
         print(f"  ⏱️ Scene duration: {scene_duration:.1f}s each")
 
-    # Create simple image clips (no Ken Burns = 10x faster)
-    clips = []
-    for i, path in enumerate(scene_paths):
-        clip = (ImageClip(path)
-                .with_duration(scene_duration)
-                .resized((width, height)))
-        clips.append(clip)
-        print(f"  🎥 Clip {i+1}/{len(scene_paths)}: {os.path.basename(path)} ({scene_duration:.1f}s)")
+    # Parse lyrics into per-scene lines
+    lyric_lines = []
+    if lyrics:
+        lines = [l.strip() for l in lyrics.strip().split("\n") if l.strip()]
+        # Distribute lyrics across scenes
+        lines_per_scene = max(1, len(lines) // len(scene_paths))
+        for i in range(len(scene_paths)):
+            start = i * lines_per_scene
+            end = start + lines_per_scene
+            scene_lyrics = "\n".join(lines[start:end]) if start < len(lines) else ""
+            lyric_lines.append(scene_lyrics)
 
-    # Add crossfade transitions
-    transition = min(TRANSITION_DURATION, scene_duration * 0.3)
+    # Create clips with zoom effect
+    clips = []
+    zoom_dirs = ["in", "out"]
+
+    for i, path in enumerate(scene_paths):
+        zoom = zoom_dirs[i % 2]
+        clip = create_zoom_clip(path, scene_duration, zoom, width, height)
+
+        # Add lyric overlay if available
+        if lyric_lines and i < len(lyric_lines) and lyric_lines[i]:
+            lyric_clip = create_lyric_overlay(lyric_lines[i], scene_duration, width, height)
+            if lyric_clip:
+                clip = CompositeVideoClip([clip, lyric_clip], size=(width, height))
+
+        clips.append(clip)
+        print(f"  🎥 Clip {i+1}/{len(scene_paths)}: {os.path.basename(path)} ({scene_duration:.1f}s, zoom {zoom})")
+
+    # Crossfade transitions
+    transition = min(TRANSITION_DURATION, scene_duration * 0.2)
     if transition > 0 and len(clips) > 1:
         for i in range(1, len(clips)):
             clips[i] = clips[i].with_effects([vfx.CrossFadeIn(transition)])
             clips[i-1] = clips[i-1].with_effects([vfx.CrossFadeOut(transition)])
 
-    # Concatenate all clips
+    # Concatenate
     final = concatenate_videoclips(clips, method="compose")
 
     # Add audio
@@ -85,7 +186,7 @@ def assemble_video(scene_paths, audio_path, output_path,
 
 
 def assemble_silent_video(scene_paths, output_path, scene_duration=None):
-    """Create a video without audio (for preview/testing)."""
+    """Create a video without audio."""
     return assemble_video(scene_paths, None, output_path, scene_duration)
 
 

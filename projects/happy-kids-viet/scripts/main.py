@@ -91,8 +91,11 @@ def run_pipeline(topic, skip_video=False):
                 print(f"  💡 Tip: Download music from Suno AI → save as audio/{topic.lower()}.mp3")
                 audio_path = None
 
+        # Get lyrics for overlay
+        lyrics_text = "\n".join(script.get("lyrics", []))
+
         if audio_path:
-            assemble_video(scene_paths, audio_path, video_path)
+            assemble_video(scene_paths, audio_path, video_path, lyrics=lyrics_text)
         else:
             assemble_silent_video(scene_paths, video_path, scene_duration=3)
     else:
