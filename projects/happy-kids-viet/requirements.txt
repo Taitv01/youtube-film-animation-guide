@@ -1,3 +1,5 @@
 moviepy
 Pillow
 numpy
+requests
+python-dotenv

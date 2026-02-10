@@ -185,6 +185,87 @@ def assemble_video(scene_paths, audio_path, output_path,
     return output_path
 
 
+def assemble_from_clips(clip_paths, audio_path, output_path,
+                        width=None, height=None, fps=None, lyrics=None):
+    """
+    Assemble pre-animated MP4 clips into a final video with audio.
+    Used when scenes have been animated by Minimax AI.
+    """
+    from moviepy import VideoFileClip
+
+    width = width or VIDEO_WIDTH
+    height = height or VIDEO_HEIGHT
+    fps = fps or VIDEO_FPS
+
+    print(f"\n🎬 Assembling from {len(clip_paths)} AI-animated clips...")
+
+    # Load audio
+    audio = None
+    if audio_path and os.path.exists(audio_path):
+        audio = AudioFileClip(audio_path)
+        print(f"  🎵 Audio: {audio.duration:.1f}s")
+
+    # Load clips
+    clips = []
+    for i, path in enumerate(clip_paths):
+        clip = VideoFileClip(path)
+        # Resize if needed
+        if clip.size != (width, height):
+            clip = clip.resized((width, height))
+        clips.append(clip)
+        print(f"  📹 Clip {i+1}: {os.path.basename(path)} ({clip.duration:.1f}s)")
+
+    # Add lyric overlay if available
+    if lyrics:
+        lines = [l.strip() for l in lyrics.strip().split("\n") if l.strip()]
+        lines_per_clip = max(1, len(lines) // len(clips))
+        for i, clip in enumerate(clips):
+            start = i * lines_per_clip
+            end = start + lines_per_clip
+            lyric_text = "\n".join(lines[start:end]) if start < len(lines) else ""
+            if lyric_text:
+                overlay = create_lyric_overlay(lyric_text, clip.duration, width, height)
+                if overlay:
+                    clips[i] = CompositeVideoClip([clip, overlay], size=(width, height))
+
+    # Crossfade transitions
+    transition = 0.5
+    if len(clips) > 1:
+        for i in range(1, len(clips)):
+            clips[i] = clips[i].with_effects([vfx.CrossFadeIn(transition)])
+            clips[i-1] = clips[i-1].with_effects([vfx.CrossFadeOut(transition)])
+
+    final = concatenate_videoclips(clips, method="compose")
+
+    # Add audio
+    if audio:
+        if audio.duration > final.duration:
+            audio = audio.subclipped(0, final.duration)
+        elif audio.duration < final.duration:
+            final = final.subclipped(0, audio.duration)
+        final = final.with_audio(audio)
+
+    # Export
+    print(f"\n  💾 Exporting to: {output_path}")
+    final.write_videofile(
+        output_path,
+        fps=fps,
+        codec="libx264",
+        audio_codec="aac",
+        preset="ultrafast",
+        threads=4,
+        logger="bar",
+    )
+
+    final.close()
+    if audio:
+        audio.close()
+
+    file_size = os.path.getsize(output_path) / (1024 * 1024)
+    print(f"  ✅ Video saved! Size: {file_size:.1f} MB")
+    return output_path
+
+
 def assemble_silent_video(scene_paths, output_path, scene_duration=None):
     """Create a video without audio."""
     return assemble_video(scene_paths, None, output_path, scene_duration)
@@ -197,3 +278,4 @@ if __name__ == "__main__":
         assemble_silent_video(test_scenes, "test_output/test_video.mp4", 3)
     else:
         print("No test scenes found. Run image_generator.py first.")
+
